@@ -34,6 +34,7 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
 
     def skip_default(self, field):
         """
+        这个高级，细节考虑的很周全
         MySQL doesn't accept default values for TEXT and BLOB types, and
         implicitly treats these columns as nullable.
         """
@@ -53,6 +54,11 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
         # field.default may be unhashable, so a set isn't used for "in" check.
         if self.skip_default(field) and field.default not in (None, NOT_PROVIDED):
             effective_default = self.effective_default(field)
+
+            # 如何理解text, blob等字段的default呢?
+            # 就是给之前的字段添加default的value
+            # TODO: 这个地方是一个大坑呀? 如果数据量巨大，则会非常慢
+            # update table_name set column =
             self.execute('UPDATE %(table)s SET %(column)s = %%s' % {
                 'table': self.quote_name(model._meta.db_table),
                 'column': self.quote_name(field.column),

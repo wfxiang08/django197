@@ -37,14 +37,21 @@ class BaseDatabaseSchemaEditor(object):
     # Overrideable SQL templates
     sql_create_table = "CREATE TABLE %(table)s (%(definition)s)"
     sql_rename_table = "ALTER TABLE %(old_table)s RENAME TO %(new_table)s"
+
+    # 这个是干嘛的?
     sql_retablespace_table = "ALTER TABLE %(table)s SET TABLESPACE %(new_tablespace)s"
+
+    # 级联删除Table
     sql_delete_table = "DROP TABLE %(table)s CASCADE"
 
     sql_create_column = "ALTER TABLE %(table)s ADD COLUMN %(column)s %(definition)s"
     sql_alter_column = "ALTER TABLE %(table)s %(changes)s"
     sql_alter_column_type = "ALTER COLUMN %(column)s TYPE %(type)s"
+
+    # 添加默认值
     sql_alter_column_null = "ALTER COLUMN %(column)s DROP NOT NULL"
     sql_alter_column_not_null = "ALTER COLUMN %(column)s SET NOT NULL"
+
     sql_alter_column_default = "ALTER COLUMN %(column)s SET DEFAULT %(default)s"
     sql_alter_column_no_default = "ALTER COLUMN %(column)s DROP DEFAULT"
     sql_delete_column = "ALTER TABLE %(table)s DROP COLUMN %(column)s CASCADE"
@@ -64,9 +71,11 @@ class BaseDatabaseSchemaEditor(object):
     sql_create_inline_fk = None
     sql_delete_fk = "ALTER TABLE %(table)s DROP CONSTRAINT %(name)s"
 
+    # 添加删除index
     sql_create_index = "CREATE INDEX %(name)s ON %(table)s (%(columns)s)%(extra)s"
     sql_delete_index = "DROP INDEX %(name)s"
 
+    # 添加删除pk
     sql_create_pk = "ALTER TABLE %(table)s ADD CONSTRAINT %(name)s PRIMARY KEY (%(columns)s)"
     sql_delete_pk = "ALTER TABLE %(table)s DROP CONSTRAINT %(name)s"
 
@@ -80,15 +89,20 @@ class BaseDatabaseSchemaEditor(object):
 
     def __enter__(self):
         self.deferred_sql = []
+
+        # MYSQL不支持: ddl的事务，因此直接跳过
         if self.connection.features.can_rollback_ddl:
             self.atomic = atomic(self.connection.alias)
             self.atomic.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        # 执行: deferred_sql
         if exc_type is None:
             for sql in self.deferred_sql:
                 self.execute(sql)
+
+        # MYSQL不支持: ddl的事务，因此直接跳过
         if self.connection.features.can_rollback_ddl:
             self.atomic.__exit__(exc_type, exc_value, traceback)
 
@@ -195,17 +209,22 @@ class BaseDatabaseSchemaEditor(object):
         Returns a field's effective database default value
         """
         if field.has_default():
+            # 如果有默认值，则使用默认值
             default = field.get_default()
         elif not field.null and field.blank and field.empty_strings_allowed:
+            # 如果不允许为空，但是django运行不输入数据(对应的input就不回传服务器), 则使用空字符串
             if field.get_internal_type() == "BinaryField":
                 default = six.binary_type()
             else:
                 default = six.text_type()
         else:
             default = None
+
         # If it's a callable, call it
+        # default可以为函数(这个需要注意?)
         if six.callable(default):
             default = default()
+
         # Run it through the field's get_db_prep_save method so we can send it
         # to the database.
         default = field.get_db_prep_save(default, self.connection)
@@ -379,6 +398,8 @@ class BaseDatabaseSchemaEditor(object):
         # Special-case implicit M2M tables
         if field.many_to_many and field.remote_field.through._meta.auto_created:
             return self.create_model(field.remote_field.through)
+
+
         # Get the column's definition
         definition, params = self.column_sql(model, field, include_default=True)
         # It might not actually have a column behind it
@@ -388,13 +409,21 @@ class BaseDatabaseSchemaEditor(object):
         db_params = field.db_parameters(connection=self.connection)
         if db_params['check']:
             definition += " CHECK (%s)" % db_params['check']
+
+
         # Build the SQL and run it
+        # 1. 添加Field时，使用带有默认值的SQL语句
         sql = self.sql_create_column % {
             "table": self.quote_name(model._meta.db_table),
             "column": self.quote_name(field.column),
             "definition": definition,
         }
         self.execute(sql, params)
+
+
+        # 2. 然后将对应字段的default给DROP掉，因为Django不太喜欢使用database自带的defaults
+        #    这个非常崩溃呀
+        #       正在运行中的代码，由于没有及时更新，添加数据时没有默认值，这是数据库也没有默认值，那该如何处理呢?
         # Drop the default if we need to
         # (Django usually does not use in-database defaults)
         if not self.skip_default(field) and field.default is not None:
@@ -405,12 +434,18 @@ class BaseDatabaseSchemaEditor(object):
                 }
             }
             self.execute(sql)
+        #
         # Add an index, if required
         if field.db_index and not field.unique:
             self.deferred_sql.append(self._create_index_sql(model, [field]))
+
         # Add any FK constraints later
         if field.remote_field and self.connection.features.supports_foreign_keys and field.db_constraint:
             self.deferred_sql.append(self._create_fk_sql(model, field, "_fk_%(to_table)s_%(to_column)s"))
+
+        # 有些connection会cache表的meta信息，因此需要close connection
+        # 这个对于正在运行的代码是什么情况呢?
+        #
         # Reset connection if required
         if self.connection.features.connection_persists_old_columns:
             self.connection.close()
