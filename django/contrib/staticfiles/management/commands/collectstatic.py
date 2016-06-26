@@ -1,7 +1,10 @@
+# -*- coding:utf-8 -*-
 from __future__ import unicode_literals
 
 import os
 from collections import OrderedDict
+import subprocess
+import time
 
 from django.contrib.staticfiles.finders import get_finders
 from django.contrib.staticfiles.storage import staticfiles_storage
@@ -11,6 +14,25 @@ from django.core.management.color import no_style
 from django.utils.encoding import smart_text
 from django.utils.six.moves import input
 
+
+import platform
+is_mac_os = platform.system() == "Darwin"
+
+# Django必须是通过pip安装，不能采用egg
+if is_mac_os:
+    md5_command = "md5"
+else:
+    md5_command = "md5sum"
+
+def get_normalized_md5(source_path):
+    md5 = subprocess.check_output("%s %s" % (md5_command, source_path), shell=True)
+    if is_mac_os:
+        idx = md5.find("=")
+        if idx != -1:
+            md5 = md5[(idx + 2):]
+    else:
+        md5 = md5[:32]
+    return md5
 
 class Command(BaseCommand):
     """
@@ -88,13 +110,18 @@ class Command(BaseCommand):
         if self.clear:
             self.clear_dir('')
 
+        # 通过符号链接 提高拷贝的数据
         if self.symlink:
             handler = self.link_file
         else:
             handler = self.copy_file
 
+
         found_files = OrderedDict()
+
+        # finders的管理
         for finder in get_finders():
+            # 通过finder来遍历:
             for path, storage in finder.list(self.ignore_patterns):
                 # Prefix the relative path if the source storage contains it
                 if getattr(storage, 'prefix', None):
@@ -104,6 +131,7 @@ class Command(BaseCommand):
 
                 if prefixed_path not in found_files:
                     found_files[prefixed_path] = (storage, path)
+                    # 发现没有处理的文件, 然后调用: handler(copy or link)
                     handler(path, prefixed_path, storage)
                 else:
                     self.log(
@@ -143,6 +171,10 @@ class Command(BaseCommand):
         self.set_options(**options)
 
         message = ['\n']
+
+        # 尝试看看有什么文件是需要更新的:
+        # python manage.py collectstatic --dry-run
+        # python manage.py collectstatic --link 如果使用了自定义的storage, 那么不要使用 --link 选项
         if self.dry_run:
             message.append(
                 'You have activated the --dry-run option so no files will be modified.\n\n'
@@ -235,11 +267,12 @@ class Command(BaseCommand):
         """
         Checks if the target file should be deleted if it already exists
         """
+
+        # 如果storage中存在prefixed_path, 那么该如何处理呢?
         if self.storage.exists(prefixed_path):
             try:
                 # When was the target file modified last time?
-                target_last_modified = \
-                    self.storage.modified_time(prefixed_path)
+                target_last_modified = self.storage.modified_time(prefixed_path)
             except (OSError, NotImplementedError, AttributeError):
                 # The storage doesn't support ``modified_time`` or failed
                 pass
@@ -257,8 +290,8 @@ class Command(BaseCommand):
                         full_path = None
                     # Skip the file if the source file is younger
                     # Avoid sub-second precision (see #14665, #19540)
-                    if (target_last_modified.replace(microsecond=0)
-                            >= source_last_modified.replace(microsecond=0)):
+                    # 如果目标文件的修改时间 比 source文件的修改时间晚，那说明没有必要删除目标文件；直接返回 False
+                    if (target_last_modified.replace(microsecond=0) >= source_last_modified.replace(microsecond=0)):
                         if not ((self.symlink and full_path
                                  and not os.path.islink(full_path)) or
                                 (not self.symlink and full_path
@@ -267,6 +300,25 @@ class Command(BaseCommand):
                                 self.unmodified_files.append(prefixed_path)
                             self.log("Skipping '%s' (not modified)" % path)
                             return False
+                    else:
+                        # 原始文件修改了，是否拷贝呢?
+                        # 先做md5检查，
+                        ## 检查md5 is_mac_os
+                        if full_path:
+                            source_path = source_storage.path(path)
+                            md51 = get_normalized_md5(source_path)
+                            md52 = get_normalized_md5(full_path)
+
+
+                            if md51 == md52:
+                                # 如何touch目标文件的修改时间(避免下次再次调用md5)
+                                t = time.mktime(source_last_modified.timetuple()) + source_last_modified.microsecond / 1E6 + 0.1
+                                os.utime(full_path, (t, t))
+
+                                # git的分支切换可能会修改文件的时间
+                                self.log(u"Skipping '%s' (not modified)" % path)
+                                self.unmodified_files.add(prefixed_path)
+                                return False
             # Then delete the existing file if really needed
             if self.dry_run:
                 self.log("Pretending to delete '%s'" % path)
@@ -321,7 +373,10 @@ class Command(BaseCommand):
         # Skip this file if it was already copied earlier
         if prefixed_path in self.copied_files:
             return self.log("Skipping '%s' (already copied earlier)" % path)
+
+
         # Delete the target file if needed or break
+        # 是否需要删除目标文件
         if not self.delete_file(path, prefixed_path, source_storage):
             return
         # The full path of the source file
@@ -331,6 +386,8 @@ class Command(BaseCommand):
             self.log("Pretending to copy '%s'" % source_path, level=1)
         else:
             self.log("Copying '%s'" % source_path, level=1)
+
+            # 读取source_path, 保存到storage中
             with source_storage.open(path) as source_file:
                 self.storage.save(prefixed_path, source_file)
         self.copied_files.append(prefixed_path)
