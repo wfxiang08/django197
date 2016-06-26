@@ -30,7 +30,10 @@ class DeclarativeFieldsMetaclass(MediaDefiningClass):
     """
     def __new__(mcs, name, bases, attrs):
         # Collect fields from current class.
+
+        # attrs 为Form定义时输入的字段；对于直接从Model生成的Form这部分的信息为空
         current_fields = []
+        # 把定义的Field排查，然后调用super来构建一个新Class
         for key, value in list(attrs.items()):
             if isinstance(value, Field):
                 current_fields.append((key, value))
@@ -38,8 +41,7 @@ class DeclarativeFieldsMetaclass(MediaDefiningClass):
         current_fields.sort(key=lambda x: x[1].creation_counter)
         attrs['declared_fields'] = OrderedDict(current_fields)
 
-        new_class = (super(DeclarativeFieldsMetaclass, mcs)
-            .__new__(mcs, name, bases, attrs))
+        new_class = (super(DeclarativeFieldsMetaclass, mcs).__new__(mcs, name, bases, attrs))
 
         # Walk through the MRO.
         declared_fields = OrderedDict()
@@ -475,6 +477,7 @@ class BaseForm(object):
         return [field for field in self if not field.is_hidden]
 
 
+# Form集成自: BaseForm, 并且: metaclass为: DeclarativeFieldsMetaclass
 class Form(six.with_metaclass(DeclarativeFieldsMetaclass, BaseForm)):
     "A collection of Fields, plus their associated data."
     # This is a separate class from BaseForm in order to abstract the way
