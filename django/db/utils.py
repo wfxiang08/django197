@@ -109,10 +109,7 @@ def load_backend(backend_name):
     Return a database backend's "base" module given a fully qualified database
     backend name, or raise an error if it doesn't exist.
     """
-    # This backend was renamed in Django 1.9.
-    if backend_name == 'django.db.backends.postgresql_psycopg2':
-        backend_name = 'django.db.backends.postgresql'
-
+    # 加载: django.db.backends.mysql.base 这个文件
     try:
         return import_module('%s.base' % backend_name)
     except ImportError as e_user:
@@ -231,9 +228,20 @@ class ConnectionHandler(object):
         db = self.databases[alias]
 
         # 获取到db的配置之后，首先获取db["ENGINE"]
-        # 例如: django.db.backends.mysql
+        # 例如:
+        #      django.db.backends.mysql
+        #      django.db.backends.sqlite3
+        # 加载: django.db.backends.mysql.base 这个文件
         backend = load_backend(db['ENGINE'])
+
+        # 接下来访问:
+        #      django.db.backends.mysql.base.DatabaseWrapper
+        #      django.db.backends.sqlite3.base.DatabaseWrapper
+        # 它们继承自 django.db.backends.base.DatabaseWrapper，实现了相同的接口
+        #
         conn = backend.DatabaseWrapper(db, alias)
+
+        # 将: conn 保存到 self._connections中
         setattr(self._connections, alias, conn)
         return conn
 
@@ -250,6 +258,7 @@ class ConnectionHandler(object):
         return [self[alias] for alias in self]
 
     def close_all(self):
+        # 参考: __iter__, 遍历self.databases
         for alias in self:
             try:
                 connection = getattr(self._connections, alias)
@@ -267,8 +276,10 @@ class ConnectionRouter(object):
 
     @cached_property
     def routers(self):
+        # _routers可以有，也可以没有
         if self._routers is None:
             self._routers = settings.DATABASE_ROUTERS
+        # 加载所有的routers
         routers = []
         for r in self._routers:
             if isinstance(r, six.string_types):
@@ -301,6 +312,7 @@ class ConnectionRouter(object):
     db_for_write = _router_func('db_for_write')
 
     def allow_relation(self, obj1, obj2, **hints):
+        # 两个对象是否允许存在relation?
         for router in self.routers:
             try:
                 method = router.allow_relation

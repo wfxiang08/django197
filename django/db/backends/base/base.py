@@ -23,7 +23,9 @@ except ImportError:
 
 NO_DB_ALIAS = '__no_db__'
 
-
+#
+# django.db.connection 的接口定义
+#
 class BaseDatabaseWrapper(object):
     """
     Represents a database connection.
@@ -50,6 +52,8 @@ class BaseDatabaseWrapper(object):
         # to disambiguate it from Django settings modules.
         self.settings_dict = settings_dict
         self.alias = alias
+
+        # XXX: 记录的查询日志
         # Query logging in debug mode or when explicitly enabled.
         self.queries_log = deque(maxlen=self.queries_limit)
         self.force_debug_cursor = False
@@ -57,7 +61,11 @@ class BaseDatabaseWrapper(object):
         # Transaction related attributes.
         # Tracks if the connection is in autocommit mode. Per PEP 249, by
         # default, it isn't.
+        # 如果不使用连接池，这个推荐使用False
+        # 如果使用连接池，则这个推荐使用True; 否则会触发MySQL的 Table Meta Lock的长时间占用
+        #
         self.autocommit = False
+
         # Tracks if the connection is in a transaction managed by 'atomic'.
         self.in_atomic_block = False
         # Increment to generate unique savepoint ids.
@@ -124,10 +132,13 @@ class BaseDatabaseWrapper(object):
 
     @property
     def queries_logged(self):
+        # 是否Log 查询日志, 取决于Debug的状态
         return self.force_debug_cursor or settings.DEBUG
 
     @property
     def queries(self):
+        # 获取queries, 但是没有clear, 这个会在: request结束的时候clear
+        # django.db#reset_queries()
         if len(self.queries_log) == self.queries_log.maxlen:
             warnings.warn(
                 "Limit for query logging exceeded, only the last {} queries "
@@ -169,9 +180,14 @@ class BaseDatabaseWrapper(object):
         self.errors_occurred = False
         # Establish the connection
         conn_params = self.get_connection_params()
+
+        # 创建connection
         self.connection = self.get_new_connection(conn_params)
+        # 设置: AUTOCOMMIT 状态
         self.set_autocommit(self.settings_dict['AUTOCOMMIT'])
+
         self.init_connection_state()
+        # 发出: connection_created的信号
         connection_created.send(sender=self.__class__, connection=self)
 
         self.run_on_commit = []
@@ -489,6 +505,7 @@ class BaseDatabaseWrapper(object):
         if self.connection is not None:
             # If the application didn't restore the original autocommit setting,
             # don't take chances, drop the connection.
+            # 不可用
             if self.get_autocommit() != self.settings_dict['AUTOCOMMIT']:
                 self.close()
                 return
@@ -497,11 +514,17 @@ class BaseDatabaseWrapper(object):
             # since the last commit / rollback, check if the connection works.
             if self.errors_occurred:
                 if self.is_usable():
+                    # 可用，则恢复erros_occured的状态
                     self.errors_occurred = False
                 else:
                     self.close()
                     return
 
+            # close_at:
+            # 在django 1.9.7中 request 开始时，或者结束后，都会调用: close_if_unusable_or_obsolete
+            # 如果一切正常，例如: 没有任何错误发生，但是django process可能长时间没有任务，导致: connection闲置很久，例如: 8小时以上，
+            # 那么这个connection就出现timeout, 因此需要主动关闭
+            #
             if self.close_at is not None and time.time() >= self.close_at:
                 self.close()
                 return

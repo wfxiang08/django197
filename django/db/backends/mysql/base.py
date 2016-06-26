@@ -146,12 +146,18 @@ class CursorWrapper(object):
         self.close()
 
 
+#
+# django.db.connection 的实际实现
+#
 class DatabaseWrapper(BaseDatabaseWrapper):
     vendor = 'mysql'
     # This dictionary maps Field objects to their associated MySQL column
     # types, as strings. Column-type strings can contain format strings; they'll
     # be interpolated against the values of Field.__dict__ before being output.
     # If a column type is set to None, it won't be included in the output.
+    #
+    # 建立 Django db field 和 mysql的字段的映射关系
+    #
     _data_types = {
         'AutoField': 'integer AUTO_INCREMENT',
         'BinaryField': 'longblob',
@@ -182,6 +188,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
 
     @cached_property
     def data_types(self):
+        # 是否支持"微秒"的精度
         if self.features.supports_microsecond_precision:
             return dict(self._data_types, DateTimeField='datetime(6)', TimeField='time(6)')
         else:
@@ -222,6 +229,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         'iendswith': "LIKE CONCAT('%%', {})",
     }
 
+    # 引用MySQLdb
     Database = Database
     SchemaEditorClass = DatabaseSchemaEditor
 
@@ -262,7 +270,10 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         return kwargs
 
     def get_new_connection(self, conn_params):
+        # 如何创建一个新的connection
         conn = Database.connect(**conn_params)
+
+        # 注意: encoders的使用
         conn.encoders[SafeText] = conn.encoders[six.text_type]
         conn.encoders[SafeBytes] = conn.encoders[bytes]
         return conn
@@ -348,6 +359,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
                         referenced_table_name, referenced_column_name))
 
     def is_usable(self):
+        # 检查: MySQL Connection是否可用
         try:
             self.connection.ping()
         except Database.Error:
